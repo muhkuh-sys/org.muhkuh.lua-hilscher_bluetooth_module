@@ -1,5 +1,6 @@
 
 #include <string.h>
+#include <stdint.h>
 
 #include "interface.h"
 #include "netx_io_areas.h"
@@ -115,15 +116,11 @@ static unsigned char crc8ccitt(const unsigned char *pucData, unsigned int sizDat
 static unsigned char aucBuffer[1024];
 
 
-static void send_demo(void)
+static void send_command(unsigned char ucCommand)
 {
-	HOSTDEF(ptUartArea);
 	unsigned long ulValue;
 	unsigned int sizPayload;
 	unsigned int uiCnt;
-	unsigned char ucCrc;
-	int iIsElapsed;
-	TIMER_HANDLE_T tTimer;
 	unsigned char aucHeader[8];
 
 
@@ -146,7 +143,7 @@ static void send_demo(void)
 	aucHeader[5] = (unsigned char)((ulValue >>  8U) & 0xffU);
 
 	/* Set the frame identifier. This is the opcode. */
-	aucHeader[6] = BTSC_READ_DEV_INFO;
+	aucHeader[6] = ucCommand;
 
 	/* Generate the CCITT CRC over the frame control and the frame identifier. */
 	aucHeader[7] = crc8ccitt(aucHeader+4U, 3U);
@@ -156,12 +153,26 @@ static void send_demo(void)
 	{
 		uart_put(UART_UNIT, aucHeader[uiCnt]);
 	}
+}
 
-	/* Receive as much as possible in 100ms.
-	 * We expect about 66 bytes which should be transfered at 115.2k in
-	 * about 4.6ms . Provide some more time for the device to react.
-	 */
-	systime_handle_start_ms(&tTimer, 100U);
+
+
+static int receive_device_info(unsigned long ulTimeoutinMs)
+{
+	HOSTDEF(ptUartArea);
+	int iResult;
+	unsigned long ulValue;
+	unsigned int uiCnt;
+	unsigned char ucCrc;
+	int iIsElapsed;
+	TIMER_HANDLE_T tTimer;
+
+
+	/* Be pessimistic. */
+	iResult = -1;
+
+	/* Receive as much as possible in the given timeout. */
+	systime_handle_start_ms(&tTimer, ulTimeoutinMs);
 	uiCnt = 0;
 	iIsElapsed = 0;
 	do
@@ -173,6 +184,10 @@ static void send_demo(void)
 		{
 			aucBuffer[uiCnt] = (unsigned char)((ptUartArea->ulUartdr) & 0xffU);
 			++uiCnt;
+			if( uiCnt>=sizeof(aucBuffer) )
+			{
+				break;
+			}
 		}
 		else
 		{
@@ -185,9 +200,6 @@ static void send_demo(void)
 		}
 	} while( uiCnt<sizeof(aucBuffer) );
 
-//	uprintf("Response:\n");
-//	hexdump(aucBuffer, uiCnt);
-
 	/* Check the SYNC words. */
 	if( uiCnt>8 && aucBuffer[0]==0xDE && aucBuffer[1]==0x51 && aucBuffer[2]==0x4E && aucBuffer[3]==0x90 )
 	{
@@ -199,16 +211,14 @@ static void send_demo(void)
 			if( aucBuffer[5]==0x40 && aucBuffer[6]==0x00 )
 			{
 				/* The size of the response must be 0x3a. */
-				sizPayload = aucBuffer[4];
-				if( sizPayload==0x3a )
+				if( aucBuffer[4]==0x3a )
 				{
 					/* Is the opcode correct? */
 					if( aucBuffer[8]==BTSC_READ_DEV_INFO )
 					{
 						if( aucBuffer[9]==0x00 )
 						{
-							hexdump(aucBuffer, uiCnt);
-
+							iResult = 0;
 						}
 						else
 						{
@@ -242,6 +252,333 @@ static void send_demo(void)
 	{
 		uprintf("No SYNC words found.\n");
 	}
+
+	return iResult;
+}
+
+
+
+/*----------------------------------------------------------------------------*/
+/*! Poll for data from UART until timeout.
+ * @return Amount of bytes received. */
+static unsigned int prvUartReceive(uint8_t* pucBuf, unsigned int sizBuf, unsigned long ulTimeout)
+{
+	HOSTDEF(ptUartArea);
+	TIMER_HANDLE_T tTimer;
+	int iIsElapsed;
+	unsigned long ulValue;
+	unsigned int  uiCnt;
+
+
+	iIsElapsed = 0;
+	uiCnt = 0;
+
+	systime_handle_start_ms(&tTimer, ulTimeout);
+	do
+	{
+		/* Is data in the FIFO? */
+		ulValue = ptUartArea->ulUartfr;
+		ulValue &= HOSTMSK(uartfr_RXFE);
+		if( ulValue==0U )
+		{
+			pucBuf[uiCnt] = (unsigned char)((ptUartArea->ulUartdr) & 0xffU);
+			++uiCnt;
+		}
+		else
+		{
+			/* Timer elapsed? */
+			iIsElapsed = systime_handle_is_elapsed(&tTimer);
+			if( iIsElapsed!=0 )
+			{
+				break;
+			}
+		}
+	} while( uiCnt<sizBuf );
+
+	return uiCnt;
+}
+
+
+
+/*! Transmit data over UART.
+ * \return Amount of bytes transmitted. */
+static void prvUartTransmit(const uint8_t* pucBuf, unsigned int sizBuf)
+{
+	unsigned int sizCnt;
+
+
+	for(sizCnt=0; sizCnt<sizBuf; ++sizCnt)
+	{
+		uart_put(UART_UNIT, pucBuf[sizCnt]);
+	}
+}
+
+
+
+/* Second stage bootloader command opcodes. */
+#define BTSC_DFU_ACK                    ( 0x79 )
+#define BTSC_DFU_NACK                   ( 0x1F )
+#define BTSC_DFU_OPCODE_ERASE           ( 0x43 )
+#define BTSC_DFU_OPCODE_WRITE           ( 0x31 )
+#define BTSC_DFU_OPCODE_GO              ( 0x21 )
+
+#define BTSC_DFU_DEVINFO_PAGE_IDX       ( 115 ) // 116-th page
+#define BTSC_DFU_DEVINFO_PAGE_OFFSET    (   8 )
+#define BTSC_DFU_DEVINFO_ADDR           ( 0x1007D800 )
+
+
+
+/* \return 0 if command is acknowledged; otherwise -1. */
+static void prvSendDfuCmdOpcode(uint8_t opcode)
+{
+	uint8_t obuf[2];
+
+
+	obuf[0] =  opcode;
+	obuf[1] = (uint8_t)(~opcode);
+
+	/* send DFU command opcode. */
+	prvUartTransmit(obuf, sizeof(obuf));
+}
+
+
+
+static void prvSendDfuCmdParameters(const uint8_t* pucParam, unsigned int sizParam)
+{
+	uint8_t ucChecksum;
+	unsigned int sizCnt;
+
+
+	ucChecksum = 0;
+	for(sizCnt = 0; sizCnt<sizParam; ++sizCnt)
+	{
+		ucChecksum ^= pucParam[sizCnt];
+	}
+
+	prvUartTransmit(pucParam, sizParam);
+	prvUartTransmit(&ucChecksum, 1);
+}
+
+
+
+static int prvWaitForAck(void)
+{
+	int iResult;
+	uint8_t ibuf[1] = {0};
+	unsigned int ilen;
+
+
+	iResult = -1;
+
+	/* Wait for ACK. */
+	ilen = prvUartReceive(ibuf, sizeof(ibuf), 50);
+	if( ilen==1 && ibuf[0]==BTSC_DFU_ACK )
+	{
+		iResult = 0;
+	}
+
+	return iResult;
+}
+
+
+
+/* TODO: Write new MAC address if required.
+ * \note length of the given MAC address must be 6 octets.  */
+static int prvUpdateMacAddress(const unsigned char *pucMac)
+{
+//    int isAddressEqual = -1;
+	unsigned int sizReceived;
+	int iResult;
+
+	uint8_t ibuf[255] = {0};
+//    uint16_t ilen = 0;
+	uint8_t  bParamCount = 0;
+	uint8_t abParam[255] = {0};
+
+
+	/* Read the device info and receive the response.
+	 * We expect about 66 bytes which should be transfered at 115.2k in
+	 * about 4.6ms . Provide some more time for the device to react.
+	 */
+	send_command(BTSC_READ_DEV_INFO);
+	iResult = receive_device_info(50);
+	if( iResult!=0 )
+	{
+		uprintf("Failed to receive the device info.\n");
+	}
+	else
+	{
+		/* Is the MAC in the device equal to the one to set?
+		 * memcmp returns 0 if the MAC is the same.
+		 */
+		uprintf("MAC in device:\n");
+		hexdump(aucBuffer+0x3a, 6);
+
+		iResult = memcmp(aucBuffer+0x3a, pucMac, 6);
+		if( iResult==0 )
+		{
+			uprintf("No need to update the device.\n");
+		}
+		else
+		{
+			uprintf("Enter second stage bootloader\n");
+			send_command(BTSC_DFU_MODE_REQUEST);
+			/* NOTE: do not use prvWaitForAck here. There is a 0x00 byte before the ACK.
+			 *       But the last byte must be an ACK.
+			 */
+			sizReceived = prvUartReceive(aucBuffer, sizeof(aucBuffer), 100);
+			if( sizReceived==0 )
+			{
+				uprintf("Nothing received after enter 2nd stage bootloader.\n");
+			}
+			else if( aucBuffer[sizReceived-1]!=BTSC_DFU_ACK )
+			{
+				uprintf("The last byte in the buffer is no ACK.\n");
+				uprintf("Received:\n");
+				hexdump(aucBuffer, sizReceived);
+			}
+			else
+			{
+				/*------- Erase configuration page. ----------------*/
+				uprintf("Erase configuration page\n");
+
+				/* Send command opcode. */
+				prvSendDfuCmdOpcode(BTSC_DFU_OPCODE_ERASE);
+				iResult = prvWaitForAck();
+				if( iResult!=0 )
+				{
+					uprintf("No ACK received for erase opcode.\n");
+				}
+				else
+				{
+					/* Send command parameter. */
+					bParamCount = 0;
+					abParam[bParamCount++] = 1;  // number of flash pages to erase
+					abParam[bParamCount++] = BTSC_DFU_DEVINFO_PAGE_OFFSET + BTSC_DFU_DEVINFO_PAGE_IDX; /* index of configuration page. */
+
+					prvSendDfuCmdParameters(abParam, bParamCount);
+					iResult = prvWaitForAck();
+					if( iResult!=0 )
+					{
+						uprintf("No ACK received for erase parameter.\n");
+					}
+					else
+					{
+						/*------- Write MAC address. ----------------*/
+						uprintf("Write MAC address\n");
+						/* Send command opcode. */
+						prvSendDfuCmdOpcode(BTSC_DFU_OPCODE_WRITE);
+						iResult = prvWaitForAck();
+						if( iResult!=0 )
+						{
+							uprintf("No ACK received for write opcode.\n");
+						}
+						else
+						{
+							/* Send command parameter: address to write */
+							uint32_t ulDevInfoAddress = BTSC_DFU_DEVINFO_ADDR;
+
+							bParamCount = 0;
+							abParam[bParamCount++] = (uint8_t)(ulDevInfoAddress >> 24U);
+							abParam[bParamCount++] = (uint8_t)(ulDevInfoAddress >> 16U);
+							abParam[bParamCount++] = (uint8_t)(ulDevInfoAddress >>  8U);
+							abParam[bParamCount++] = (uint8_t)ulDevInfoAddress;
+
+							prvSendDfuCmdParameters(abParam, bParamCount);
+							iResult = prvWaitForAck();
+							if( iResult!=0 )
+							{
+								uprintf("No ACK received for write parameter.\n");
+							}
+							else
+							{
+								/* Write MAC address. */
+								bParamCount = 0;
+								abParam[bParamCount++] = 8; /* Amount of following data. It must be multiple of 4. */
+								abParam[bParamCount++] = pucMac[0];
+								abParam[bParamCount++] = pucMac[1];
+								abParam[bParamCount++] = pucMac[2];
+								abParam[bParamCount++] = pucMac[3];
+								abParam[bParamCount++] = pucMac[4];
+								abParam[bParamCount++] = pucMac[5];
+								abParam[bParamCount++] = 0xFF;
+								abParam[bParamCount++] = 0xFF;
+
+								prvSendDfuCmdParameters(abParam, bParamCount);
+								iResult = prvWaitForAck();
+								if( iResult!=0 )
+								{
+									uprintf("No ACK received for write data.\n");
+								}
+								else
+								{
+									/*------- Send command opcode. ----------------*/
+									prvSendDfuCmdOpcode(BTSC_DFU_OPCODE_GO);
+									iResult = prvWaitForAck();
+									if( iResult!=0 )
+									{
+										uprintf("No ACK received for go opcode.\n");
+									}
+									else
+									{
+										/* Address of application entry function: 0x10044104 */
+										uint32_t ulAppEntryAddress = 0x10044104;
+
+										bParamCount = 0;
+										abParam[bParamCount++] = (uint8_t)(ulAppEntryAddress >> 24U);
+										abParam[bParamCount++] = (uint8_t)(ulAppEntryAddress >> 16U);
+										abParam[bParamCount++] = (uint8_t)(ulAppEntryAddress >>  8U);
+										abParam[bParamCount++] = (uint8_t) ulAppEntryAddress;
+
+										prvSendDfuCmdParameters(abParam, bParamCount);
+										iResult = prvWaitForAck();
+										if( iResult!=0 )
+										{
+											uprintf("No ACK received for go parameter.\n");
+										}
+										else
+										{
+											uprintf("App init\n");
+											sizReceived = prvUartReceive(ibuf, sizeof(ibuf), 100);
+											if (sizReceived)
+											{
+												hexdump(ibuf, sizReceived);
+											}
+
+											/* Read current MAC. */
+											uprintf("Read device info\n");
+											send_command(BTSC_READ_DEV_INFO);
+											iResult = receive_device_info(50);
+											if( iResult!=0 )
+											{
+												uprintf("Failed to receive the device info.\n");
+											}
+											else
+											{
+												/* Is the MAC in the device equal to the one to set?
+												 * memcmp returns 0 if the MAC is the same.
+												 */
+												uprintf("Updated MAC in device:\n");
+												hexdump(aucBuffer+0x3a, 6);
+
+												iResult = memcmp(aucBuffer+0x3a, pucMac, 6);
+												if( iResult!=0 )
+												{
+													uprintf("The MAC update failed!\n");
+												}
+											}
+										}
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	return iResult;
 }
 
 
@@ -259,8 +596,11 @@ TEST_RESULT_T test(void)
 	/* Initialize the UART to 115.2k, 8N1. */
 	uart_init(UART_UNIT, &tUartCfg);
 
+	const uint8_t abMac[] = {0xC1, 0xC2, 0xC3, 0xC4, 0xB5, 0xB6};
+	prvUpdateMacAddress(abMac);
+
 	/* Send a demo frame. */
-	send_demo();
+//	send_demo();
 
 	return tResult;
 }
