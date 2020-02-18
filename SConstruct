@@ -70,16 +70,17 @@ sources = """
 #
 
 # The list of include folders. Here it is used for all files.
-astrIncludePaths = ['src', '#platform/src', '#platform/src/lib', '#targets/version', 'targets/netx90_module_hispi/include']
+astrIncludePaths = ['src', '#platform/src', '#platform/src/lib', '#targets/version']
 
 # This is the demo for the COM side.
 tEnvCom = atEnv.NETX90.Clone()
 tEnvCom.Append(CPPPATH = astrIncludePaths)
 tEnvCom.Replace(LDFILE = 'src/netx90/netx90_com_intram.ld')
 tSrcCom = tEnvCom.SetBuildPath('targets/netx90', 'src', sources)
-tElfCom = tEnvCom.Elf('targets/netx90_bluetooth_id.elf', tSrcCom + tEnvCom['PLATFORM_LIBRARY'])
-tTxtCom = tEnvCom.ObjDump('targets/netx90_bluetooth_id.txt', tElfCom, OBJDUMP_FLAGS=['--disassemble', '--source', '--all-headers', '--wide'])
-BLUETOOTH_ID_NETX90_COM = tEnvCom.ObjCopy('targets/netx90_bluetooth_id.bin', tElfCom)
+tElfCom = tEnvCom.Elf('targets/netx90_hilscher_bluetooth.elf', tSrcCom + tEnvCom['PLATFORM_LIBRARY'])
+tTxtCom = tEnvCom.ObjDump('targets/netx90_hilscher_bluetooth.txt', tElfCom, OBJDUMP_FLAGS=['--disassemble', '--source', '--all-headers', '--wide'])
+HILSCHER_BLUETOOTH_NETX90 = tEnvCom.ObjCopy('targets/netx90_hilscher_bluetooth.bin', tElfCom)
+HILSCHER_BLUETOOTH_LUA = tEnvCom.GccSymbolTemplate('targets/lua/hilscher_bluetooth.lua', tElfCom, GCCSYMBOLTEMPLATE_TEMPLATE=File('templates/hilscher_bluetooth.lua'))
 
 
 #----------------------------------------------------------------------------
@@ -117,7 +118,8 @@ aAttribs.update(dict({
 # Install the files to the testbench.
 #
 atFiles = {
-    'targets/testbench/netx/netx90_bluetooth_id.bin':      BLUETOOTH_ID_NETX90_COM
+    'targets/testbench/netx/netx90_hilscher_bluetooth.bin':      HILSCHER_BLUETOOTH_NETX90,
+    'targets/testbench/lua/hilscher_bluetooth.lua':              HILSCHER_BLUETOOTH_LUA
 }
 for tDst, tSrc in atFiles.iteritems():
     Command(tDst, tSrc, Copy("$TARGET", "$SOURCE"))
