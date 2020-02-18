@@ -382,19 +382,66 @@ static int prvWaitForAck(void)
 
 
 
-/* TODO: Write new MAC address if required.
- * \note length of the given MAC address must be 6 octets.  */
-static int prvUpdateMacAddress(const unsigned char *pucMac)
+static TEST_RESULT_T readDeviceinfo(unsigned char *pucBuffer)
 {
-//    int isAddressEqual = -1;
-	unsigned int sizReceived;
+	TEST_RESULT_T tResult;
 	int iResult;
 
-	uint8_t ibuf[255] = {0};
-//    uint16_t ilen = 0;
-	uint8_t  bParamCount = 0;
-	uint8_t abParam[255] = {0};
 
+	/* Be pessimistic. */
+	tResult = TEST_RESULT_ERROR;
+
+	send_command(BTSC_READ_DEV_INFO);
+	iResult = receive_device_info(50);
+	if( iResult!=0 )
+	{
+		uprintf("Failed to receive the device info.\n");
+	}
+	else
+	{
+		hexdump(aucBuffer, 0x42);
+		/* The device info starts at offset 0x0a. Before it there is
+		 * the header of the "BTSC_COMMAND_COMPLETE" event, which is...
+		 *   8 bytes header
+		 *   1 byte opcode triggering this event
+		 *   1 byte BTSC error code
+		 * ---------------------------------------
+		 *  10 bytes
+		 * The complete header was already evaluated in the "receive_device_info" function.
+		 *
+		 * The data after the header is...
+		 *  16 bytes firmware version string
+		 *  16 bytes hardware version string
+		 *  16 bytes bluetooth LE serial number
+		 *      0- 3: chip identifier
+		 *      4-11: unique device serial number
+		 *   8 bytes: Bluetooth public MAC address
+		 * ---------------------------------------
+		 *  56 bytes (0x38)
+		 *
+		 * All information was found here: https://kb.hilscher.com/x/7KF_Bg
+		 */
+		memcpy(pucBuffer, aucBuffer+0x0a, 0x38);
+		tResult = TEST_RESULT_OK;
+	}
+
+	return tResult;
+}
+
+
+
+/* TODO: Write new MAC address if required.
+ * \note length of the given MAC address must be 6 octets.  */
+static TEST_RESULT_T prvUpdateMacAddress(const unsigned char *pucMac)
+{
+	unsigned int sizReceived;
+	int iResult;
+	TEST_RESULT_T tResult;
+	unsigned int uiParamCount;
+	unsigned char aucParam[16];
+
+	/* Be pessimistic. */
+	tResult = TEST_RESULT_ERROR;
 
 	/* Read the device info and receive the response.
 	 * We expect about 66 bytes which should be transfered at 115.2k in
@@ -418,6 +465,7 @@ static int prvUpdateMacAddress(const unsigned char *pucMac)
 		if( iResult==0 )
 		{
 			uprintf("No need to update the device.\n");
+			tResult = TEST_RESULT_OK;
 		}
 		else
 		{
@@ -452,11 +500,11 @@ static int prvUpdateMacAddress(const unsigned char *pucMac)
 				else
 				{
 					/* Send command parameter. */
-					bParamCount = 0;
-					abParam[bParamCount++] = 1;  // number of flash pages to erase
-					abParam[bParamCount++] = BTSC_DFU_DEVINFO_PAGE_OFFSET + BTSC_DFU_DEVINFO_PAGE_IDX; /* index of configuration page. */
+					uiParamCount = 0;
+					aucParam[uiParamCount++] = 1;  // number of flash pages to erase
+					aucParam[uiParamCount++] = BTSC_DFU_DEVINFO_PAGE_OFFSET + BTSC_DFU_DEVINFO_PAGE_IDX; /* index of configuration page. */
 
-					prvSendDfuCmdParameters(abParam, bParamCount);
+					prvSendDfuCmdParameters(aucParam, uiParamCount);
 					iResult = prvWaitForAck();
 					if( iResult!=0 )
 					{
@@ -478,13 +526,13 @@ static int prvUpdateMacAddress(const unsigned char *pucMac)
 							/* Send command parameter: address to write */
 							uint32_t ulDevInfoAddress = BTSC_DFU_DEVINFO_ADDR;
 
-							bParamCount = 0;
-							abParam[bParamCount++] = (uint8_t)(ulDevInfoAddress >> 24U);
-							abParam[bParamCount++] = (uint8_t)(ulDevInfoAddress >> 16U);
-							abParam[bParamCount++] = (uint8_t)(ulDevInfoAddress >>  8U);
-							abParam[bParamCount++] = (uint8_t)ulDevInfoAddress;
+							uiParamCount = 0;
+							aucParam[uiParamCount++] = (uint8_t)(ulDevInfoAddress >> 24U);
+							aucParam[uiParamCount++] = (uint8_t)(ulDevInfoAddress >> 16U);
+							aucParam[uiParamCount++] = (uint8_t)(ulDevInfoAddress >>  8U);
+							aucParam[uiParamCount++] = (uint8_t)ulDevInfoAddress;
 
-							prvSendDfuCmdParameters(abParam, bParamCount);
+							prvSendDfuCmdParameters(aucParam, uiParamCount);
 							iResult = prvWaitForAck();
 							if( iResult!=0 )
 							{
@@ -493,18 +541,18 @@ static int prvUpdateMacAddress(const unsigned char *pucMac)
 							else
 							{
 								/* Write MAC address. */
-								bParamCount = 0;
-								abParam[bParamCount++] = 8; /* Amount of following data. It must be multiple of 4. */
-								abParam[bParamCount++] = pucMac[0];
-								abParam[bParamCount++] = pucMac[1];
-								abParam[bParamCount++] = pucMac[2];
-								abParam[bParamCount++] = pucMac[3];
-								abParam[bParamCount++] = pucMac[4];
-								abParam[bParamCount++] = pucMac[5];
-								abParam[bParamCount++] = 0xFF;
-								abParam[bParamCount++] = 0xFF;
+								uiParamCount = 0;
+								aucParam[uiParamCount++] = 8; /* Amount of following data. It must be multiple of 4. */
+								aucParam[uiParamCount++] = pucMac[0];
+								aucParam[uiParamCount++] = pucMac[1];
+								aucParam[uiParamCount++] = pucMac[2];
+								aucParam[uiParamCount++] = pucMac[3];
+								aucParam[uiParamCount++] = pucMac[4];
+								aucParam[uiParamCount++] = pucMac[5];
+								aucParam[uiParamCount++] = 0xFF;
+								aucParam[uiParamCount++] = 0xFF;
 
-								prvSendDfuCmdParameters(abParam, bParamCount);
+								prvSendDfuCmdParameters(aucParam, uiParamCount);
 								iResult = prvWaitForAck();
 								if( iResult!=0 )
 								{
@@ -524,13 +572,13 @@ static int prvUpdateMacAddress(const unsigned char *pucMac)
 										/* Address of application entry function: 0x10044104 */
 										uint32_t ulAppEntryAddress = 0x10044104;
 
-										bParamCount = 0;
-										abParam[bParamCount++] = (uint8_t)(ulAppEntryAddress >> 24U);
-										abParam[bParamCount++] = (uint8_t)(ulAppEntryAddress >> 16U);
-										abParam[bParamCount++] = (uint8_t)(ulAppEntryAddress >>  8U);
-										abParam[bParamCount++] = (uint8_t) ulAppEntryAddress;
+										uiParamCount = 0;
+										aucParam[uiParamCount++] = (uint8_t)(ulAppEntryAddress >> 24U);
+										aucParam[uiParamCount++] = (uint8_t)(ulAppEntryAddress >> 16U);
+										aucParam[uiParamCount++] = (uint8_t)(ulAppEntryAddress >>  8U);
+										aucParam[uiParamCount++] = (uint8_t) ulAppEntryAddress;
 
-										prvSendDfuCmdParameters(abParam, bParamCount);
+										prvSendDfuCmdParameters(aucParam, uiParamCount);
 										iResult = prvWaitForAck();
 										if( iResult!=0 )
 										{
@@ -539,10 +587,10 @@ static int prvUpdateMacAddress(const unsigned char *pucMac)
 										else
 										{
 											uprintf("App init\n");
-											sizReceived = prvUartReceive(ibuf, sizeof(ibuf), 100);
-											if (sizReceived)
+											sizReceived = prvUartReceive(aucBuffer, sizeof(aucBuffer), 100);
+											if( sizReceived!=0 )
 											{
-												hexdump(ibuf, sizReceived);
+												hexdump(aucBuffer, sizReceived);
 											}
 
 											/* Read current MAC. */
@@ -566,6 +614,10 @@ static int prvUpdateMacAddress(const unsigned char *pucMac)
 												{
 													uprintf("The MAC update failed!\n");
 												}
+												else
+												{
+													tResult = TEST_RESULT_OK;
+												}
 											}
 										}
 									}
@@ -578,29 +630,56 @@ static int prvUpdateMacAddress(const unsigned char *pucMac)
 		}
 	}
 
-	return iResult;
+	return tResult;
 }
 
 
 
-TEST_RESULT_T test(void)
+TEST_RESULT_T test(BT_PARAMETER_T *ptParameter)
 {
 	TEST_RESULT_T tResult;
+	BT_COMMAND_T tCommand;
 
 
 	systime_init();
 
-	uprintf("Bluetooth ID " VERSION_ALL "\n");
-	tResult = TEST_RESULT_OK;
+	if( ptParameter==NULL )
+	{
+		uprintf("Bluetooth ID " VERSION_ALL "\n");
+		tResult = TEST_RESULT_OK;
+	}
+	else
+	{
+		tCommand = ptParameter->tCommand;
 
-	/* Initialize the UART to 115.2k, 8N1. */
-	uart_init(UART_UNIT, &tUartCfg);
+		tResult = TEST_RESULT_ERROR;
+		switch( tCommand )
+		{
+		case BT_COMMAND_ReadDeviceInfo:
+		case BT_COMMAND_UpdateMAC:
+			tResult = TEST_RESULT_OK;
+			break;
+		}
+		if( tResult!=TEST_RESULT_OK )
+		{
+			uprintf("Invalid command: 0x%08x\n", tCommand);
+		}
+		else
+		{
+			uart_init(UART_UNIT, &tUartCfg);
 
-	const uint8_t abMac[] = {0xC1, 0xC2, 0xC3, 0xC4, 0xB5, 0xB6};
-	prvUpdateMacAddress(abMac);
+			switch( tCommand )
+			{
+			case BT_COMMAND_ReadDeviceInfo:
+				tResult = readDeviceinfo(ptParameter->uData.tReadDeviceInfo.aucData);
+				break;
 
-	/* Send a demo frame. */
-//	send_demo();
+			case BT_COMMAND_UpdateMAC:
+				tResult = prvUpdateMacAddress(ptParameter->uData.tUpdateMac.aucMAC);
+				break;
+			}
+		}
+	}
 
 	return tResult;
 }
