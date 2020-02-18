@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <?xml-stylesheet type="text/xsl" href="mbs/setup2html.xsl"?>
 
-<muhkuh_buildsystem project="netx90_bluetooth_id">
+<muhkuh_buildsystem project="hilscher_bluetooth_module">
 	<project_version>1.0.0</project_version>
 
 	<scons>
