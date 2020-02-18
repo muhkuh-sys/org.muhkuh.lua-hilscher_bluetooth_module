@@ -115,6 +115,46 @@ aAttribs.update(dict({
 
 # ---------------------------------------------------------------------------
 #
+# Build an archive.
+#
+strGroup = 'org.muhkuh.lua'
+strModule = 'hilscher_bluetooth_module'
+
+# Split the group by dots.
+aGroup = strGroup.split('.')
+# Build the path for all artifacts.
+strModulePath = 'targets/jonchki/repository/%s/%s/%s' % ('/'.join(aGroup), strModule, PROJECT_VERSION)
+
+strArtifact = 'hilscher_bluetooth_module'
+
+tArcList = atEnv.DEFAULT.ArchiveList('zip')
+
+#tArcList.AddFiles('doc/',
+#    doc)
+
+tArcList.AddFiles('netx/',
+    HILSCHER_BLUETOOTH_NETX90
+)
+
+tArcList.AddFiles('lua/',
+    HILSCHER_BLUETOOTH_LUA
+)
+
+
+tArcList.AddFiles('',
+    'installer/%s-%s/install.lua' % (strGroup, strModule))
+
+
+strBasePath = os.path.join(strModulePath, '%s-%s' % (strArtifact, PROJECT_VERSION))
+tArtifact = atEnv.DEFAULT.Archive('%s.zip' % strBasePath, None, ARCHIVE_CONTENTS = tArcList)
+tArtifactHash = atEnv.DEFAULT.Hash('%s.hash' % tArtifact[0].get_path(), tArtifact[0].get_path(), HASH_ALGORITHM='md5,sha1,sha224,sha256,sha384,sha512', HASH_TEMPLATE='${ID_UC}:${HASH}\n')
+tConfiguration = atEnv.DEFAULT.Version('%s.xml' % strBasePath, 'installer/%s-%s/%s.xml' % (strGroup, strModule, strArtifact))
+tConfigurationHash = atEnv.DEFAULT.Hash('%s.hash' % tConfiguration[0].get_path(), tConfiguration[0].get_path(), HASH_ALGORITHM='md5,sha1,sha224,sha256,sha384,sha512', HASH_TEMPLATE='${ID_UC}:${HASH}\n')
+tPom = atEnv.DEFAULT.ArtifactVersion('%s.pom' % strBasePath, 'installer/%s-%s/%s.pom' % (strGroup, strModule, strArtifact))
+
+
+# ---------------------------------------------------------------------------
+#
 # Install the files to the testbench.
 #
 atFiles = {
